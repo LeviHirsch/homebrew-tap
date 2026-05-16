@@ -1,4 +1,4 @@
-# Levi's Homebrew Tap
+# Download Markthisdown App instructions
 
 Personal Homebrew tap for apps and tools.
 
