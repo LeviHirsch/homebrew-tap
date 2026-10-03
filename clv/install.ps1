@@ -21,6 +21,7 @@
 	$Bin = Join-Path $HOME '.collevity\bin'
 	$ClvPs1 = Join-Path $Bin 'clv.ps1'
 	$Utf8 = New-Object System.Text.UTF8Encoding($false)
+	$UseColor = (-not $env:NO_COLOR) -and (-not [Console]::IsOutputRedirected)
 
 	try {
 		# Never replace a clv or nt that this kit didn't write.
@@ -40,7 +41,7 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$ClvVersion = '0.1.0-kit'
+$ClvVersion = '0.1.1-kit'
 $InstallUrl = 'https://raw.githubusercontent.com/LeviHirsch/homebrew-tap/main/clv/install.ps1'
 if ($env:CLV_INSTALL_URL) { $InstallUrl = $env:CLV_INSTALL_URL }
 
@@ -63,15 +64,19 @@ $V0Bin = Join-Path $LocalAppData 'nt\bin'
 $CfUrl = 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe'
 $Utf8 = New-Object System.Text.UTF8Encoding($false)
 
-function Say([string]$Text) { Write-Host $Text }
+# Color only on a real console, and never when NO_COLOR is set.
+$UseColor = (-not $env:NO_COLOR) -and (-not [Console]::IsOutputRedirected)
+function Say([string]$Text, [string]$Color) {
+	if ($Color -and $UseColor) { Write-Host $Text -ForegroundColor $Color } else { Write-Host $Text }
+}
 function Fail([string]$Text) {
-	Write-Host ''
-	Write-Host "Setup stopped: $Text" -ForegroundColor Red
+	Say ''
+	Say "Setup stopped: $Text" Red
 	exit 1
 }
 
 function Show-Usage {
-	Say "clv $ClvVersion`: NascenTech client"
+	Say "clv $ClvVersion`: NascenTech client" Cyan
 	Say ''
 	Say '  clv login [ssh args]   log in to the server (same as: nt)'
 	Say "  clv setup              (re)do this computer's setup; safe to repeat"
@@ -83,11 +88,11 @@ function Show-Usage {
 
 function Show-KeyMessage {
 	$PubLine = ([IO.File]::ReadAllText("$Key.pub")).Trim()
-	Say 'Text this whole line to Levi:'
+	Say 'Text this whole line to Levi:' Yellow
 	Say ''
 	Say "  $PubLine"
 	Say ''
-	Say "When Levi says you're registered, open a new terminal and type: nt  (or: clv login)"
+	Say "When Levi says you're registered, open a new terminal and type: nt  (or: clv login)" Yellow
 	Say '(The first time, a browser window opens: sign in with your @nascentech.com Google account.)'
 }
 
@@ -99,7 +104,7 @@ function Get-UserPathParts {
 
 function Invoke-Setup {
 	Say ''
-	Say "Setting up clv $ClvVersion (NascenTech server login)."
+	Say "Setting up clv $ClvVersion (NascenTech server login)." Cyan
 	Say ''
 
 	# --- OpenSSH client (built into Windows 10/11, sometimes switched off)
@@ -136,7 +141,7 @@ function Invoke-Setup {
 		$OldCf = Join-Path $V0Bin 'cloudflared.exe'
 		if (Test-Path -LiteralPath $OldCf) {
 			if (Test-Path -LiteralPath $Cf) { Remove-Item -LiteralPath $OldCf -Force }
-			else { Move-Item -LiteralPath $OldCf $Cf; Say "Moved cloudflared from $V0Bin to $Vendor" }
+			else { Move-Item -LiteralPath $OldCf $Cf; Say "Moved cloudflared from $V0Bin to $Vendor" Green }
 		}
 		$OldNt = Join-Path $V0Bin 'nt.cmd'
 		if ((Test-Path -LiteralPath $OldNt) -and ([IO.File]::ReadAllText($OldNt) -eq "@echo off`r`nssh nt %*`r`n")) {
@@ -146,16 +151,16 @@ function Invoke-Setup {
 			Remove-Item -LiteralPath $V0Bin
 			$V0Dir = Split-Path $V0Bin
 			if (-not (Get-ChildItem -LiteralPath $V0Dir -Force)) { Remove-Item -LiteralPath $V0Dir }
-			Say "Removed the old $V0Dir folder"
+			Say "Removed the old $V0Dir folder" Green
 		} else {
-			Say "Left $V0Bin in place: it has other files in it"
+			Say "Left $V0Bin in place: it has other files in it" Yellow
 		}
 	}
 	if ($OnWindows) {
 		$Parts = Get-UserPathParts
 		if ($Parts -contains $V0Bin) {
 			[Environment]::SetEnvironmentVariable('Path', (@($Parts | Where-Object { $_ -ne $V0Bin }) -join ';'), 'User')
-			Say "Removed $V0Bin from your PATH"
+			Say "Removed $V0Bin from your PATH" Green
 		}
 	}
 
@@ -178,7 +183,7 @@ function Invoke-Setup {
 				Fail 'Could not download cloudflared. Check your internet connection and run this again.'
 			}
 			Move-Item -Force "$Cf.download" $Cf
-			Say "Installed cloudflared at $Cf"
+			Say "Installed cloudflared at $Cf" Green
 		}
 	}
 
@@ -199,7 +204,7 @@ function Invoke-Setup {
 		$KeygenArgs = "-q -t ed25519 -N `"`" -C `"$Name@nt`" -f `"$Key`""
 		$p = Start-Process -FilePath $SshKeygen.Source -ArgumentList $KeygenArgs -NoNewWindow -Wait -PassThru
 		if ($p.ExitCode -ne 0 -or -not (Test-Path -LiteralPath "$Key.pub")) { Fail 'Could not create your SSH key.' }
-		Say "Created your key at $Key"
+		Say "Created your key at $Key" Green
 	}
 
 	# --- Host block
@@ -216,7 +221,7 @@ function Invoke-Setup {
 	$Block += "`n"
 	if (-not (Test-Path -LiteralPath $NtConf) -or [IO.File]::ReadAllText($NtConf) -ne $Block) {
 		[IO.File]::WriteAllText($NtConf, $Block, $Utf8)
-		Say "Wrote $NtConf"
+		Say "Wrote $NtConf" Green
 	}
 
 	# --- Include line at the top of .ssh\config, once; existing lines kept as-is below it
@@ -243,7 +248,7 @@ function Invoke-Setup {
 		$New = $Utf8.GetBytes("Include ~/.ssh/config.d/*`n`n") + $Old
 		[IO.File]::WriteAllBytes("$Conf.clv-tmp", [byte[]]$New)
 		Move-Item -Force "$Conf.clv-tmp" $Conf
-		Say "Updated $Conf"
+		Say "Updated $Conf" Green
 	}
 
 	# --- user PATH
@@ -251,14 +256,14 @@ function Invoke-Setup {
 		$Parts = Get-UserPathParts
 		if ($Parts -notcontains $Bin) {
 			[Environment]::SetEnvironmentVariable('Path', (@($Parts) + $Bin) -join ';', 'User')
-			Say "Added $Bin to your PATH"
+			Say "Added $Bin to your PATH" Green
 		}
 	} else {
 		Say "(Not Windows: skipped adding $Bin to the user PATH.)"
 	}
 
 	Say ''
-	Say 'Done. One more step.'
+	Say 'Done. One more step.' Green
 	Say ''
 	Show-KeyMessage
 	Say ''
@@ -273,7 +278,7 @@ switch ($Cmd) {
 	'login' { & ssh nt @Rest; exit $LASTEXITCODE }
 	'setup' { Invoke-Setup }
 	'key' {
-		if (-not (Test-Path -LiteralPath "$Key.pub")) { Write-Host 'No key yet. Run: clv setup'; exit 1 }
+		if (-not (Test-Path -LiteralPath "$Key.pub")) { Say 'No key yet. Run: clv setup' Red; exit 1 }
 		Show-KeyMessage
 	}
 	'update' {
@@ -284,7 +289,7 @@ switch ($Cmd) {
 	{ $_ -in 'version', '--version', '-v' } { Say "clv $ClvVersion" }
 	{ $_ -in 'help', '--help', '-h' } { Show-Usage }
 	default {
-		[Console]::Error.WriteLine("clv: unknown command `"$Cmd`"")
+		Say "clv: unknown command `"$Cmd`"" Red
 		Show-Usage
 		exit 2
 	}
@@ -305,6 +310,6 @@ switch ($Cmd) {
 		$msg = $_.Exception.Message
 		if ($msg -like 'NT_SETUP: *') { $msg = $msg.Substring(10) } else { $msg = "Something went wrong: $msg" }
 		Write-Host ''
-		Write-Host "Setup stopped: $msg" -ForegroundColor Red
+		if ($UseColor) { Write-Host "Setup stopped: $msg" -ForegroundColor Red } else { Write-Host "Setup stopped: $msg" }
 	}
 }
