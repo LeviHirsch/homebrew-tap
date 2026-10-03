@@ -87,16 +87,19 @@ fi
 
 dry=0
 mode=add
+# Options may come before or after the name and key.
+args=()
 while [ $# -gt 0 ]; do
 	case "$1" in
 		--dry-run) dry=1; shift ;;
 		--remove) mode=remove; shift ;;
 		-h | --help) usage ;;
-		--) shift; break ;;
+		--) shift; while [ $# -gt 0 ]; do args+=("$1"); shift; done ;;
 		-*) die "unknown option: $1" ;;
-		*) break ;;
+		*) args+=("$1"); shift ;;
 	esac
 done
+set -- ${args[@]+"${args[@]}"}
 
 name="${1:-}"
 [ -n "$name" ] || usage
