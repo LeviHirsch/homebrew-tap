@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# nt-register — bind a fellow's nt-kit SSH key to a name on the NascenTech server.
+#
+#   nt-register <name> "<public key line>"    add a key (what the fellow texted you)
+#   nt-register --remove <name>               remove every key bound to <name>
+#   nt-register --dry-run ...                 print what would change; touches nothing
+#
+# Each key is added to the mini's authorized_keys as:
+#   command="/Users/nascentech/.collevity/bin/clv-login <name>",no-agent-forwarding ssh-ed25519 <blob> <name>@nt-kit
+# so `clv whoami` reports <name> for sessions opened with that key.
+#
+# Env:
+#   NT_REGISTER_HOST            ssh host to edit (default: nt)
+#   NT_REGISTER_AUTHKEYS_FILE   edit this local file instead of the mini (testing)
+
+set -eu
+
+REMOTE_AUTHKEYS="/Users/nascentech/.ssh/authorized_keys"
+CLV_LOGIN="/Users/nascentech/.collevity/bin/clv-login"
+HOST="${NT_REGISTER_HOST:-nt}"
+LOCAL_FILE="${NT_REGISTER_AUTHKEYS_FILE:-}"
+
+die() { printf 'nt-register: %s\n' "$*" >&2; exit 1; }
+usage() {
+	sed -n '4,6p' "$0" | sed 's/^# \{0,1\}//' >&2
+	exit 2
+}
+
+# The edit itself, as a POSIX sh script. It runs on the mini (piped over ssh)
+# or locally against NT_REGISTER_AUTHKEYS_FILE; same code either way.
+# Args: add <file> <name> <blob> <clv-login path>  |  remove <file> <name> <clv-login path>
+APPLY='
+set -eu
+mode="$1"; f="$2"; name="$3"
+stamp="$(date +%Y%m%d-%H%M%S)"
+dir="$(dirname "$f")"
+[ -d "$dir" ] || { echo "no such directory: $dir" >&2; exit 1; }
+backup() {
+	if [ -f "$f" ]; then
+		b="$f.bak-$stamp"
+		[ -e "$b" ] && b="$b-$$"
+		cp -p "$f" "$b"
+		echo "backup: $b"
+	fi
+}
+if [ "$mode" = add ]; then
+	blob="$4"; clv="$5"
+	if [ -f "$f" ] && grep -qF " $blob" "$f"; then
+		owner="$(grep -F " $blob" "$f" | sed -n "s/.*clv-login \([a-z0-9-]*\)\".*/\1/p" | head -n 1)"
+		echo "REFUSED: that key is already in $f${owner:+ (bound to $owner)}" >&2
+		exit 3
+	fi
+	existing=0
+	[ -f "$f" ] && existing="$(grep -cF "clv-login $name\"" "$f" || true)"
+	backup
+	tmp="$f.tmp.$$"
+	if [ -f "$f" ]; then cat "$f" >"$tmp"; else : >"$tmp"; fi
+	# make sure the file ends in a newline before appending
+	if [ -s "$tmp" ] && [ "$(tail -c 1 "$tmp" | od -An -c | tr -d " ")" != "\\n" ]; then echo >>"$tmp"; fi
+	printf "command=\"%s %s\",no-agent-forwarding ssh-ed25519 %s %s@nt-kit\n" "$clv" "$name" "$blob" "$name" >>"$tmp"
+	chmod 600 "$tmp"
+	mv -f "$tmp" "$f"
+	echo "added: 1 key for $name ($existing already bound to $name before)"
+elif [ "$mode" = remove ]; then
+	pat="clv-login $name\""
+	count=0
+	[ -f "$f" ] && count="$(grep -cF "$pat" "$f" || true)"
+	if [ "$count" -eq 0 ]; then
+		echo "removed: 0 lines (nothing bound to $name in $f)"
+		exit 0
+	fi
+	backup
+	tmp="$f.tmp.$$"
+	grep -vF "$pat" "$f" >"$tmp" || true
+	chmod 600 "$tmp"
+	mv -f "$tmp" "$f"
+	echo "removed: $count line(s) bound to $name (sessions already open stay open)"
+fi
+'
+
+dry=0
+mode=add
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--dry-run) dry=1; shift ;;
+		--remove) mode=remove; shift ;;
+		-h | --help) usage ;;
+		--) shift; break ;;
+		-*) die "unknown option: $1" ;;
+		*) break ;;
+	esac
+done
+
+name="${1:-}"
+[ -n "$name" ] || usage
+[[ "$name" =~ ^[a-z][a-z0-9-]{1,30}$ ]] || die "bad name '$name': use lowercase letters, digits, dashes; start with a letter; 2-31 chars"
+
+if [ -n "$LOCAL_FILE" ]; then
+	target="$LOCAL_FILE (local file)"
+else
+	target="$HOST:$REMOTE_AUTHKEYS"
+fi
+
+run_apply() {
+	if [ -n "$LOCAL_FILE" ]; then
+		sh -c "$APPLY" sh "$@"
+	else
+		# Only fixed-charset values reach the remote shell: name [a-z0-9-], blob base64.
+		local quoted="" a
+		for a in "$@"; do quoted="$quoted '$a'"; done
+		printf '%s' "$APPLY" | ssh "$HOST" "sh -s --$quoted"
+	fi
+}
+
+if [ "$mode" = remove ]; then
+	[ $# -eq 1 ] || usage
+	file="${LOCAL_FILE:-$REMOTE_AUTHKEYS}"
+	if [ "$dry" = 1 ]; then
+		echo "DRY RUN (nothing connected, nothing changed)"
+		echo "target:  $target"
+		echo "would:   back up to $file.bak-<timestamp>, then delete every line containing:"
+		echo "         clv-login $name\""
+		exit 0
+	fi
+	run_apply remove "$file" "$name" "$CLV_LOGIN"
+	exit 0
+fi
+
+[ $# -eq 2 ] || usage
+key="$2"
+# Tolerate stray whitespace / CR from a pasted text message; nothing else.
+key="$(printf '%s' "$key" | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+[ "$(printf '%s\n' "$key" | wc -l | tr -d ' ')" = 1 ] || die "key must be exactly one line"
+[[ "$key" =~ ^ssh-ed25519\ ([A-Za-z0-9+/]+=*)(\ .*)?$ ]] || die "key must look like: ssh-ed25519 AAAA... [comment]"
+blob="${BASH_REMATCH[1]}"
+fp="$(printf 'ssh-ed25519 %s\n' "$blob" | ssh-keygen -l -f - 2>/dev/null)" || die "that is not a valid ed25519 public key"
+fp="$(printf '%s' "$fp" | awk '{print $2}')"
+line="command=\"$CLV_LOGIN $name\",no-agent-forwarding ssh-ed25519 $blob $name@nt-kit"
+
+if [ "$dry" = 1 ]; then
+	echo "DRY RUN (nothing connected, nothing changed)"
+	echo "target:      $target"
+	echo "fingerprint: $fp"
+	echo "would:       refuse if the key is already present; else back up to <file>.bak-<timestamp> and append:"
+	echo "$line"
+	exit 0
+fi
+
+run_apply add "${LOCAL_FILE:-$REMOTE_AUTHKEYS}" "$name" "$blob" "$CLV_LOGIN"
+echo "fingerprint: $fp"
+echo "Next: tell $name to open a new terminal and type: nt"
+echo "      then, on the server: clv whoami   (should print $name)"
