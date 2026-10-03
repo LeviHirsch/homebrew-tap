@@ -8,8 +8,12 @@
 #   - makes an SSH key at %USERPROFILE%\.ssh\id_ed25519_nt
 #   - writes a "Host nt" entry to .ssh\config.d\nt, included from .ssh\config
 #   - adds %USERPROFILE%\.collevity\bin to your user PATH
+#   - pins the server's host key in %USERPROFILE%\.collevity\known_hosts
 #   - moves an older %LOCALAPPDATA%\nt install (nt kit v0) to this layout
 # No admin rights. Safe to run again.
+#
+# If the server is rebuilt: change $NtHostKey below (and NT_HOST_KEY in install.sh),
+# push, and have everyone run `clv update`.
 #
 # Test overrides: $env:NT_NAME skips the name prompt.
 
@@ -41,12 +45,16 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$ClvVersion = '0.1.1-kit'
+$ClvVersion = '0.1.2-kit'
 $InstallUrl = 'https://raw.githubusercontent.com/LeviHirsch/homebrew-tap/main/clv/install.ps1'
 if ($env:CLV_INSTALL_URL) { $InstallUrl = $env:CLV_INSTALL_URL }
 
 $NtHostName = 'ssh.nascentech.com'
 $NtUser = 'nascentech'
+# The server's SSH host key, pinned so nobody gets a "are you sure?" prompt or a
+# stale-key failure. If the server is rebuilt, change this one line (and the
+# same line in install.sh) and ship it; `clv update` rewrites the pinned file.
+$NtHostKey = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPDYW3BFXK5rf33PBnRJhEM1ldlaZ5amlVUu6fagf4F7'
 $OnWindows = [Environment]::OSVersion.Platform -eq 'Win32NT'
 $ClvHome = Join-Path $HOME '.collevity'
 $Bin = Join-Path $ClvHome 'bin'
@@ -56,6 +64,7 @@ $Key = Join-Path $SshDir 'id_ed25519_nt'
 $Conf = Join-Path $SshDir 'config'
 $ConfD = Join-Path $SshDir 'config.d'
 $NtConf = Join-Path $ConfD 'nt'
+$KnownHosts = Join-Path $ClvHome 'known_hosts'
 $ConfMarker = '# Written by clv setup'
 $V0ConfMarker = '# Written by the nt installer'
 $LocalAppData = $env:LOCALAPPDATA
@@ -92,7 +101,7 @@ function Show-KeyMessage {
 	Say ''
 	Say "  $PubLine"
 	Say ''
-	Say "When Levi says you're registered, open a new terminal and type: nt  (or: clv login)" Yellow
+	Say "When Levi says you're registered, type: nt  (or: clv login)" Yellow
 	Say '(The first time, a browser window opens: sign in with your @nascentech.com Google account.)'
 }
 
@@ -207,6 +216,14 @@ function Invoke-Setup {
 		Say "Created your key at $Key" Green
 	}
 
+	# --- The kit's own known_hosts: the user's .ssh\known_hosts is never read or
+	#     written for this host, so a stale entry there can't break the login.
+	$Pinned = "$NtHostName $NtHostKey`n"
+	if (-not (Test-Path -LiteralPath $KnownHosts) -or [IO.File]::ReadAllText($KnownHosts) -ne $Pinned) {
+		[IO.File]::WriteAllText($KnownHosts, $Pinned, $Utf8)
+		Say "Wrote $KnownHosts" Green
+	}
+
 	# --- Host block
 	New-Item -ItemType Directory -Force -Path $ConfD | Out-Null
 	$Block = @(
@@ -217,6 +234,9 @@ function Invoke-Setup {
 		"  ProxyCommand `"$Cf`" access ssh --hostname %h"
 		'  IdentityFile ~/.ssh/id_ed25519_nt'
 		'  IdentitiesOnly yes'
+		'  UserKnownHostsFile ~/.collevity/known_hosts'
+		'  HostKeyAlgorithms ssh-ed25519'
+		'  StrictHostKeyChecking yes'
 	) -join "`n"
 	$Block += "`n"
 	if (-not (Test-Path -LiteralPath $NtConf) -or [IO.File]::ReadAllText($NtConf) -ne $Block) {
@@ -265,6 +285,10 @@ function Invoke-Setup {
 	Say ''
 	Say 'Done. One more step.' Green
 	Say ''
+	if ($OnWindows -and ($env:Path -split ';') -notcontains $Bin -and -not $env:CLV_FROM_INSTALLER) {
+		Say "If typing nt says it isn't recognized, open a new PowerShell window." Yellow
+		Say ''
+	}
 	Show-KeyMessage
 	Say ''
 }
@@ -304,8 +328,11 @@ switch ($Cmd) {
 		# Run setup in a child PowerShell: a script file can be blocked by execution
 		# policy where `irm | iex` is not, and -ExecutionPolicy Bypass covers that.
 		$PsExe = (Get-Process -Id $PID).Path
-		& $PsExe -NoProfile -ExecutionPolicy Bypass -File $ClvPs1 setup
-		if ($LASTEXITCODE -eq 0 -and ($env:Path -split ';') -notcontains $Bin) { $env:Path = "$env:Path;$Bin" }
+		$env:CLV_FROM_INSTALLER = '1'
+		try { & $PsExe -NoProfile -ExecutionPolicy Bypass -File $ClvPs1 setup } finally { Remove-Item Env:CLV_FROM_INSTALLER -ErrorAction SilentlyContinue }
+		# `irm | iex` runs in the caller's session, so this makes `nt` work in this same window.
+		$Sep = [IO.Path]::PathSeparator
+		if ($LASTEXITCODE -eq 0 -and ($env:Path -split $Sep) -notcontains $Bin) { $env:Path = "$env:Path$Sep$Bin" }
 	} catch {
 		$msg = $_.Exception.Message
 		if ($msg -like 'NT_SETUP: *') { $msg = $msg.Substring(10) } else { $msg = "Something went wrong: $msg" }

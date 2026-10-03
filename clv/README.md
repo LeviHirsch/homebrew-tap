@@ -20,7 +20,7 @@ It asks your first name, then prints a line starting `ssh-ed25519`. Text that wh
 
 ## Log in (daily)
 
-When Levi says you're registered, open a new terminal and type:
+When Levi says you're registered, type:
 
 ```sh
 nt
@@ -45,23 +45,30 @@ nt
 | `clv` and `nt` commands | `~/.collevity/bin/` | `%USERPROFILE%\.collevity\bin\` (`clv.cmd`, `clv.ps1`, `nt.cmd`) |
 | cloudflared (skipped if already installed) | `~/.collevity/vendor/cloudflared` | `%USERPROFILE%\.collevity\vendor\cloudflared.exe` |
 | SSH key (no passphrase) | `~/.ssh/id_ed25519_nt` (+ `.pub`) | `%USERPROFILE%\.ssh\id_ed25519_nt` (+ `.pub`) |
+| The server's pinned host key | `~/.collevity/known_hosts` | `%USERPROFILE%\.collevity\known_hosts` |
 | `Host nt` entry | `~/.ssh/config.d/nt` | `%USERPROFILE%\.ssh\config.d\nt` |
 | One line added at the top of the SSH config | `Include ~/.ssh/config.d/*` in `~/.ssh/config` | same, in `%USERPROFILE%\.ssh\config` |
 | PATH | one line marked `# added by clv installer` in `~/.zshrc` / `~/.bashrc` / `~/.bash_profile` or `~/.profile` | `%USERPROFILE%\.collevity\bin` added to your user PATH |
 
 Your SSH config is backed up first (`config.clv-backup-<date>`). If you already have a `Host nt` entry, or a `clv` the kit didn't install, it stops and tells you. An older install from the nt kit (`~/.nt`, or `%LOCALAPPDATA%\nt` on Windows) is moved over automatically.
 
+If `nt` says "command not found" right after installing, open a new terminal window.
+
+## If the server is rebuilt
+
+The kit pins the server's SSH host key in its own `known_hosts` file, so nobody sees a "are you sure you want to continue connecting?" prompt, and an old entry in `~/.ssh/known_hosts` can't get in the way. If the server's key ever changes, Levi updates the one `NT_HOST_KEY` line in `install.sh` and `$NtHostKey` in `install.ps1`, pushes, and everyone runs `clv update`.
+
 ## Undo
 
 Mac / Linux:
 
 ```sh
-rm -f ~/.collevity/bin/clv ~/.collevity/bin/nt ~/.collevity/vendor/cloudflared ~/.ssh/config.d/nt ~/.ssh/id_ed25519_nt ~/.ssh/id_ed25519_nt.pub
+rm -f ~/.collevity/bin/clv ~/.collevity/bin/nt ~/.collevity/vendor/cloudflared ~/.collevity/known_hosts ~/.ssh/config.d/nt ~/.ssh/id_ed25519_nt ~/.ssh/id_ed25519_nt.pub
 ```
 
 Then delete the `Include ~/.ssh/config.d/*` line from `~/.ssh/config` (if nothing else uses it) and the `# added by clv installer` line from your shell files.
 
-Windows: delete `%USERPROFILE%\.collevity\bin\{clv.cmd,clv.ps1,nt.cmd}`, `%USERPROFILE%\.collevity\vendor\cloudflared.exe`, `.ssh\config.d\nt`, `.ssh\id_ed25519_nt*`, the `Include` line in `.ssh\config`, and remove `%USERPROFILE%\.collevity\bin` from your user PATH (Settings → "Edit environment variables for your account").
+Windows: delete `%USERPROFILE%\.collevity\bin\{clv.cmd,clv.ps1,nt.cmd}`, `%USERPROFILE%\.collevity\vendor\cloudflared.exe`, `%USERPROFILE%\.collevity\known_hosts`, `.ssh\config.d\nt`, `.ssh\id_ed25519_nt*`, the `Include` line in `.ssh\config`, and remove `%USERPROFILE%\.collevity\bin` from your user PATH (Settings → "Edit environment variables for your account").
 
 ## For Levi: register / remove
 

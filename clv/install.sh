@@ -8,8 +8,12 @@
 #   - makes an SSH key at ~/.ssh/id_ed25519_nt
 #   - writes a "Host nt" entry to ~/.ssh/config.d/nt, included from ~/.ssh/config
 #   - adds ~/.collevity/bin to PATH in your shell startup files
+#   - pins the server's host key in ~/.collevity/known_hosts
 #   - moves an older ~/.nt install (nt kit v0) to this layout
 # No sudo. Safe to run again.
+#
+# If the server is rebuilt: change NT_HOST_KEY below (and in install.ps1), push,
+# and have everyone run `clv update`.
 #
 # Test overrides: NT_NAME=<name> skips the name prompt.
 
@@ -44,7 +48,15 @@ EOF
 	chmod 755 "$BIN/nt.tmp"
 	mv -f "$BIN/nt.tmp" "$BIN/nt"
 
-	exec "$BIN/clv" setup </dev/null
+	"$BIN/clv" setup </dev/null || exit $?
+
+	# This window's PATH predates the install. Start a fresh login shell here so
+	# `nt` works right away; skip it when PATH is already right or there is no terminal.
+	case ":$PATH:" in *":$BIN:"*) exit 0 ;; esac
+	case "$(basename "${SHELL:-}")" in zsh | bash) ;; *) exit 0 ;; esac
+	if [ -t 1 ] && { : </dev/tty; } 2>/dev/null; then
+		exec "$SHELL" -l </dev/tty
+	fi
 }
 
 write_clv() {
@@ -56,11 +68,15 @@ write_clv() {
 
 set -eu
 
-CLV_VERSION="0.1.1-kit"
+CLV_VERSION="0.1.2-kit"
 CLV_INSTALL_URL="${CLV_INSTALL_URL:-https://raw.githubusercontent.com/LeviHirsch/homebrew-tap/main/clv/install.sh}"
 
 NT_HOSTNAME="ssh.nascentech.com"
 NT_USER="nascentech"
+# The server's SSH host key, pinned so nobody gets a "are you sure?" prompt or a
+# stale-key failure. If the server is rebuilt, change this one line (and the
+# same line in install.ps1) and ship it; `clv update` rewrites the pinned file.
+NT_HOST_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPDYW3BFXK5rf33PBnRJhEM1ldlaZ5amlVUu6fagf4F7"
 CLV_HOME="$HOME/.collevity"
 BIN="$CLV_HOME/bin"
 VENDOR="$CLV_HOME/vendor"
@@ -69,6 +85,7 @@ KEY="$SSH_DIR/id_ed25519_nt"
 CONF="$SSH_DIR/config"
 CONF_D="$SSH_DIR/config.d"
 NT_CONF="$CONF_D/nt"
+KNOWN_HOSTS="$CLV_HOME/known_hosts"
 CONF_MARKER="# Written by clv setup"
 V0_CONF_MARKER="# Written by the nt installer"
 RC_MARKER="# added by clv installer"
@@ -106,7 +123,7 @@ print_key_message() {
 	say ""
 	say "  $(cat "$KEY.pub")"
 	say ""
-	say "${Y}When Levi says you're registered, open a new terminal and type: ${B}nt${Z}${Y}  (or: clv login)${Z}"
+	say "${Y}When Levi says you're registered, type: ${B}nt${Z}${Y}  (or: clv login)${Z}"
 	say "(The first time, a browser window opens: sign in with your @nascentech.com Google account.)"
 }
 
@@ -228,6 +245,32 @@ setup_key() {
 	ok "Created your key at $KEY"
 }
 
+# The kit's own known_hosts: the user's ~/.ssh/known_hosts is never read or
+# written for this host, so a stale entry there can't break the login.
+write_known_hosts() {
+	printf '%s %s\n' "$NT_HOSTNAME" "$NT_HOST_KEY" >"$KNOWN_HOSTS.tmp"
+	chmod 644 "$KNOWN_HOSTS.tmp"
+	if [ -f "$KNOWN_HOSTS" ] && cmp -s "$KNOWN_HOSTS.tmp" "$KNOWN_HOSTS"; then
+		rm -f "$KNOWN_HOSTS.tmp"
+		return
+	fi
+	mv -f "$KNOWN_HOSTS.tmp" "$KNOWN_HOSTS"
+	ok "Wrote $KNOWN_HOSTS"
+}
+
+# The line that makes `nt` work in a window opened before the install.
+path_hint() {
+	case ":$PATH:" in *":$BIN:"*) return ;; esac
+	local fix
+	case "$(basename "${SHELL:-}")" in
+		zsh) fix="source ~/.zshrc" ;;
+		bash) fix="source ~/.bashrc" ;;
+		*) fix="export PATH=\"\$HOME/.collevity/bin:\$PATH\"" ;;
+	esac
+	say "${Y}If typing nt says \"command not found\", paste this line:  ${B}$fix${Z}"
+	say ""
+}
+
 write_host_block() {
 	mkdir -p "$CONF_D"
 	chmod 700 "$CONF_D"
@@ -239,6 +282,9 @@ Host nt
   ProxyCommand "$CF" access ssh --hostname %h
   IdentityFile ~/.ssh/id_ed25519_nt
   IdentitiesOnly yes
+  UserKnownHostsFile ~/.collevity/known_hosts
+  HostKeyAlgorithms ssh-ed25519
+  StrictHostKeyChecking yes
 EOF
 	chmod 600 "$NT_CONF.tmp"
 	if [ -f "$NT_CONF" ] && cmp -s "$NT_CONF.tmp" "$NT_CONF"; then
@@ -319,6 +365,7 @@ cmd_setup() {
 	migrate_v0
 	setup_cloudflared
 	setup_key
+	write_known_hosts
 	write_host_block
 	ensure_include
 	setup_path
@@ -326,6 +373,7 @@ cmd_setup() {
 	say ""
 	say "${B}${G}Done.${Z}${B} One more step.${Z}"
 	say ""
+	path_hint
 	print_key_message
 	say ""
 }
