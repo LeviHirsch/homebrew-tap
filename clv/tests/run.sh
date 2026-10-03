@@ -213,7 +213,8 @@ check "with arguments: passed to ssh, exit status passed back" '[ $RC -eq 7 ] &&
 if [ "$HAVE_PTY" = 1 ]; then
 	on_tty nt
 	check "terminal: Connecting banner, then Back banner, exit 0" 'grep -q "Connecting to the NascenTech server (maqmini)" "$OUT" && grep -q "Back on your own computer" "$OUT" && grep -q "^EXIT=0" "$OUT"'
-	check "terminal: green Connected line, between Connecting and Back" '[ "$(grep -n "Connecting to" "$OUT" | cut -d: -f1)" -lt "$(grep -n "Connected. You are now on the NascenTech server (maqmini). Type exit to come back." "$OUT" | cut -d: -f1)" ] && [ "$(grep -n "Connected. You are now" "$OUT" | cut -d: -f1)" -lt "$(grep -n "Back on your own computer" "$OUT" | cut -d: -f1)" ] && LC_ALL=C grep -q "$(printf "\033\\[32m").*Connected" "$OUT"'
+	check "terminal: green Connected line, between Connecting and Back" '[ "$(grep -n "Connecting to" "$OUT" | cut -d: -f1)" -lt "$(grep -n "Connected. You are now on the NascenTech server (maqmini)." "$OUT" | cut -d: -f1)" ] && [ "$(grep -n "Connected. You are now" "$OUT" | cut -d: -f1)" -lt "$(grep -n "Back on your own computer" "$OUT" | cut -d: -f1)" ] && LC_ALL=C grep -q "$(printf "\033\\[32m").*Connected" "$OUT"'
+	check "terminal: hint lines follow the Connected line" 'grep -q "exit         come back to your computer" "$OUT" && grep -q "claude       start the AI" "$OUT" && grep -q "clv whoami   check your name" "$OUT"'
 	check "terminal: window title set and reset" 'LC_ALL=C grep -q "$(printf "\033]0;NascenTech server\007")" "$OUT" && LC_ALL=C grep -q "$(printf "\033]0;\007")" "$OUT"'
 	check "terminal: banners are colored" '[ "$(esc_count "$OUT")" -gt 0 ]'
 	on_tty FAKE_RC=3 clv login

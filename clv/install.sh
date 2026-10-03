@@ -68,7 +68,7 @@ write_clv() {
 
 set -eu
 
-CLV_VERSION="0.1.5-kit"
+CLV_VERSION="0.1.6-kit"
 CLV_INSTALL_URL="${CLV_INSTALL_URL:-https://raw.githubusercontent.com/LeviHirsch/homebrew-tap/main/clv/install.sh}"
 
 NT_HOSTNAME="ssh.nascentech.com"
@@ -396,7 +396,7 @@ cmd_login() {
 	# browser sign-in). It goes through the user's shell and through ssh's own
 	# % substitution, so: fixed text only, no quotes and no % in it. Passed here,
 	# not in the Host block, so scp and `nt <command>` never print it.
-	connected="echo '${B}${G}✓ Connected. You are now on the NascenTech server ($NT_SERVER_LABEL). Type exit to come back.${Z}'"
+	connected="echo '${B}${G}✓ Connected. You are now on the NascenTech server ($NT_SERVER_LABEL).${Z}'; echo '    exit         come back to your computer'; echo '    claude       start the AI'; echo '    clv whoami   check your name'"
 	printf '\033]0;NascenTech server\007'
 
 	# Keep a copy of ssh's own messages (still shown as usual) so a failed

@@ -45,7 +45,7 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$ClvVersion = '0.1.5-kit'
+$ClvVersion = '0.1.6-kit'
 $InstallUrl = 'https://raw.githubusercontent.com/LeviHirsch/homebrew-tap/main/clv/install.ps1'
 if ($env:CLV_INSTALL_URL) { $InstallUrl = $env:CLV_INSTALL_URL }
 
@@ -494,7 +494,7 @@ switch ($Cmd) {
 		# ssh runs this on this computer the moment the login succeeds (after any
 		# browser sign-in). Fixed text only, and no % in it (ssh substitutes those).
 		# Passed here, not in the Host block, so `nt <command>` never prints it.
-		$Connected = "cmd /c echo [OK] Connected. You are now on the NascenTech server ($NtServerLabel). Type exit to come back."
+		$Connected = "cmd /c echo [OK] Connected. You are now on the NascenTech server ($NtServerLabel).& echo     exit         come back to your computer& echo     claude       start the AI& echo     clv whoami   check your name"
 		try { & ssh -o PermitLocalCommand=yes -o "LocalCommand=$Connected" nt; $Rc = $LASTEXITCODE }
 		finally { if ($null -ne $OldTitle) { try { $Host.UI.RawUI.WindowTitle = $OldTitle } catch { } } }
 
