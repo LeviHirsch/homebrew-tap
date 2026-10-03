@@ -43,7 +43,7 @@ main() {
 	cat >"$BIN/nt.tmp" <<'EOF'
 #!/bin/sh
 # clv-client-kit: `nt` is short for `clv login`.
-exec ssh nt "$@"
+exec "$(dirname "$0")/clv" login "$@"
 EOF
 	chmod 755 "$BIN/nt.tmp"
 	mv -f "$BIN/nt.tmp" "$BIN/nt"
@@ -68,11 +68,12 @@ write_clv() {
 
 set -eu
 
-CLV_VERSION="0.1.2-kit"
+CLV_VERSION="0.1.3-kit"
 CLV_INSTALL_URL="${CLV_INSTALL_URL:-https://raw.githubusercontent.com/LeviHirsch/homebrew-tap/main/clv/install.sh}"
 
 NT_HOSTNAME="ssh.nascentech.com"
 NT_USER="nascentech"
+NT_SERVER_LABEL="maqmini"
 # The server's SSH host key, pinned so nobody gets a "are you sure?" prompt or a
 # stale-key failure. If the server is rebuilt, change this one line (and the
 # same line in install.ps1) and ship it; `clv update` rewrites the pinned file.
@@ -93,9 +94,9 @@ V0_RC_MARKER="# added by nt installer"
 CF_BASE="https://github.com/cloudflare/cloudflared/releases/latest/download"
 
 # Color only on a terminal, and never when NO_COLOR is set. Plain ANSI, no tput.
-B="" G="" Y="" Z="" ER="" EB="" EZ=""
+B="" G="" Y="" C="" Z="" ER="" EB="" EZ=""
 if [ -z "${NO_COLOR:-}" ] && [ "${TERM:-}" != dumb ]; then
-	if [ -t 1 ]; then B=$'\033[1m' G=$'\033[32m' Y=$'\033[33m' Z=$'\033[0m'; fi
+	if [ -t 1 ]; then B=$'\033[1m' G=$'\033[32m' Y=$'\033[33m' C=$'\033[36m' Z=$'\033[0m'; fi
 	if [ -t 2 ]; then ER=$'\033[31m' EB=$'\033[1m' EZ=$'\033[0m'; fi
 fi
 
@@ -349,6 +350,64 @@ setup_path() {
 	done
 }
 
+# Log in. In a terminal with no extra arguments, say clearly when you cross
+# over to the server and when you are back, and name the window while there.
+cmd_login() {
+	# Scripted use (nt ls, pipes, scp-style): plain ssh, nothing added.
+	if [ $# -gt 0 ] || [ ! -t 0 ] || [ ! -t 1 ]; then
+		exec ssh nt "$@"
+	fi
+
+	local here rc=0 tmp log="" reason next
+	here="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo "this computer")"
+	tmp="$(mktemp -d 2>/dev/null || true)"
+	# Put the window title back and tidy up, also on Ctrl-C.
+	trap 'printf "\033]0;\007"; [ -n "$tmp" ] && rm -rf "$tmp"' EXIT
+
+	say "${B}${C}→ Connecting to the NascenTech server ($NT_SERVER_LABEL)...${Z}"
+	printf '\033]0;NascenTech server\007'
+
+	# Keep a copy of ssh's own messages (still shown as usual) so a failed
+	# connection can be explained in plain words.
+	if [ -n "$tmp" ] && mkfifo "$tmp/err" 2>/dev/null; then
+		tee "$tmp/log" <"$tmp/err" >&2 &
+		ssh nt 2>"$tmp/err" || rc=$?
+		wait || true
+		log="$(cat "$tmp/log" 2>/dev/null || true)"
+	else
+		ssh nt || rc=$?
+	fi
+	printf '\033]0;\007'
+
+	# 255 is ssh's own "could not connect"; anything else came from the session.
+	if [ "$rc" -ne 255 ]; then
+		say "${B}${G}← Back on your own computer ($here).${Z}"
+		exit "$rc"
+	fi
+
+	case "$log" in
+		*"Permission denied"*)
+			reason="Levi hasn't registered your key yet."
+			next="Run: clv key   and text that line to Levi." ;;
+		*"Host key verification failed"* | *"REMOTE HOST IDENTIFICATION"*)
+			reason="this computer has an old record of the server."
+			next="Run: clv update   then type nt again." ;;
+		*"Could not resolve"* | *"no such host"* | *"etwork is unreachable"* | *"dial tcp"* | *"i/o timeout"*)
+			reason="you look offline."
+			next="Check your internet connection, then type nt again." ;;
+		*"client_loop"* | *"Broken pipe"* | *"server not responding"*)
+			reason="the connection dropped."
+			next="Type nt to reconnect." ;;
+		*)
+			reason="the browser sign-in didn't finish."
+			next="Type nt again and sign in with your @nascentech.com Google account. Still stuck? Run: clv key   and text that line to Levi." ;;
+	esac
+	printf '%sCould not stay connected to the server: %s%s\n' "$ER" "$reason" "$EZ" >&2
+	say "${Y}$next${Z}"
+	say "${B}← Still on your own computer ($here).${Z}"
+	exit "$rc"
+}
+
 cmd_setup() {
 	say ""
 	say "${B}Setting up clv $CLV_VERSION (NascenTech server login).${Z}"
@@ -384,7 +443,7 @@ cmd_key() {
 }
 
 case "${1:-help}" in
-	login) shift; exec ssh nt "$@" ;;
+	login) shift; cmd_login "$@" ;;
 	setup) cmd_setup ;;
 	key) cmd_key ;;
 	update)

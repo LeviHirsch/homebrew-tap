@@ -45,12 +45,13 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$ClvVersion = '0.1.2-kit'
+$ClvVersion = '0.1.3-kit'
 $InstallUrl = 'https://raw.githubusercontent.com/LeviHirsch/homebrew-tap/main/clv/install.ps1'
 if ($env:CLV_INSTALL_URL) { $InstallUrl = $env:CLV_INSTALL_URL }
 
 $NtHostName = 'ssh.nascentech.com'
 $NtUser = 'nascentech'
+$NtServerLabel = 'maqmini'
 # The server's SSH host key, pinned so nobody gets a "are you sure?" prompt or a
 # stale-key failure. If the server is rebuilt, change this one line (and the
 # same line in install.sh) and ship it; `clv update` rewrites the pinned file.
@@ -299,7 +300,38 @@ if ($args.Count -ge 1) { $Cmd = [string]$args[0] }
 if ($args.Count -ge 2) { $Rest = @($args[1..($args.Count - 1)]) }
 
 switch ($Cmd) {
-	'login' { & ssh nt @Rest; exit $LASTEXITCODE }
+	'login' {
+		# Scripted use (nt ls, pipes): plain ssh, nothing added.
+		$Interactive = ($Rest.Count -eq 0) -and (-not [Console]::IsInputRedirected) -and (-not [Console]::IsOutputRedirected)
+		if (-not $Interactive) { & ssh nt @Rest; exit $LASTEXITCODE }
+
+		# In a terminal: say clearly when you cross over to the server and when
+		# you are back, and name the window while there.
+		$Here = [Environment]::MachineName
+		Say "--> Connecting to the NascenTech server ($NtServerLabel)..." Cyan
+		$OldTitle = $null
+		try { $OldTitle = $Host.UI.RawUI.WindowTitle; $Host.UI.RawUI.WindowTitle = 'NascenTech server' } catch { $OldTitle = $null }
+		$Rc = 255
+		try { & ssh nt; $Rc = $LASTEXITCODE }
+		finally { if ($null -ne $OldTitle) { try { $Host.UI.RawUI.WindowTitle = $OldTitle } catch { } } }
+
+		# 255 is ssh's own "could not connect"; anything else came from the session.
+		if ($Rc -ne 255) {
+			Say "<-- Back on your own computer ($Here)." Green
+			exit $Rc
+		}
+		$Online = $true
+		try { [Net.Dns]::GetHostAddresses($NtHostName) | Out-Null } catch { $Online = $false }
+		if (-not $Online) {
+			Say 'Could not connect to the server: you look offline.' Red
+			Say 'Check your internet connection, then type nt again.' Yellow
+		} else {
+			Say "Could not stay connected to the server. Most likely Levi hasn't registered your key yet, or the browser sign-in didn't finish." Red
+			Say 'Type nt again and sign in with your @nascentech.com Google account. Still stuck? Run: clv key   and text that line to Levi.' Yellow
+		}
+		Say "<-- Still on your own computer ($Here)."
+		exit $Rc
+	}
 	'setup' { Invoke-Setup }
 	'key' {
 		if (-not (Test-Path -LiteralPath "$Key.pub")) { Say 'No key yet. Run: clv setup' Red; exit 1 }
@@ -323,7 +355,7 @@ switch ($Cmd) {
 		[IO.File]::WriteAllText((Join-Path $Bin 'clv.cmd'),
 			"@echo off`r`nrem $Marker`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0clv.ps1`" %*`r`n", $Utf8)
 		[IO.File]::WriteAllText((Join-Path $Bin 'nt.cmd'),
-			"@echo off`r`nrem $Marker`: nt is short for clv login`r`nssh nt %*`r`n", $Utf8)
+			"@echo off`r`nrem $Marker`: nt is short for clv login`r`n`"%~dp0clv.cmd`" login %*`r`n", $Utf8)
 
 		# Run setup in a child PowerShell: a script file can be blocked by execution
 		# policy where `irm | iex` is not, and -ExecutionPolicy Bypass covers that.
