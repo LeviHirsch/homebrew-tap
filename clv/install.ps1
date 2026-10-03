@@ -45,7 +45,7 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$ClvVersion = '0.1.3-kit'
+$ClvVersion = '0.1.4-kit'
 $InstallUrl = 'https://raw.githubusercontent.com/LeviHirsch/homebrew-tap/main/clv/install.ps1'
 if ($env:CLV_INSTALL_URL) { $InstallUrl = $env:CLV_INSTALL_URL }
 
@@ -66,6 +66,9 @@ $Conf = Join-Path $SshDir 'config'
 $ConfD = Join-Path $SshDir 'config.d'
 $NtConf = Join-Path $ConfD 'nt'
 $KnownHosts = Join-Path $ClvHome 'known_hosts'
+# What setup added to this computer, one fact per line, so uninstall removes
+# exactly that: "cloudflared", "include", "created:<file>".
+$State = Join-Path $ClvHome '.clv-kit-state'
 $ConfMarker = '# Written by clv setup'
 $V0ConfMarker = '# Written by the nt installer'
 $LocalAppData = $env:LOCALAPPDATA
@@ -92,6 +95,7 @@ function Show-Usage {
 	Say "  clv setup              (re)do this computer's setup; safe to repeat"
 	Say '  clv key                show the line to text Levi'
 	Say '  clv update             reinstall the latest version'
+	Say '  clv uninstall [--all]  remove clv from this computer (--all: your key too)'
 	Say '  clv version            show the version'
 	Say '  clv help               show this help'
 }
@@ -104,6 +108,13 @@ function Show-KeyMessage {
 	Say ''
 	Say "When Levi says you're registered, type: nt  (or: clv login)" Yellow
 	Say '(The first time, a browser window opens: sign in with your @nascentech.com Google account.)'
+}
+
+function Test-State([string]$Fact) {
+	return (Test-Path -LiteralPath $State) -and (@([IO.File]::ReadAllLines($State)) -contains $Fact)
+}
+function Add-State([string]$Fact) {
+	if (-not (Test-State $Fact)) { [IO.File]::AppendAllText($State, "$Fact`n", $Utf8) }
 }
 
 function Get-UserPathParts {
@@ -145,13 +156,21 @@ function Invoke-Setup {
 
 	New-Item -ItemType Directory -Force -Path $Bin, $Vendor, $SshDir | Out-Null
 
+	# No state file but the kit's Host block is there: an install from before
+	# the state file existed. Setup then works out once what the kit had added.
+	$Legacy = $false
+	if (-not (Test-Path -LiteralPath $State)) {
+		$Legacy = Test-Path -LiteralPath $NtConf
+		Add-State 'kit-state-1'
+	}
+
 	# --- Move an nt kit v0 install (%LOCALAPPDATA%\nt\bin) over
 	$Cf = Join-Path $Vendor 'cloudflared.exe'
 	if (Test-Path -LiteralPath $V0Bin) {
 		$OldCf = Join-Path $V0Bin 'cloudflared.exe'
 		if (Test-Path -LiteralPath $OldCf) {
 			if (Test-Path -LiteralPath $Cf) { Remove-Item -LiteralPath $OldCf -Force }
-			else { Move-Item -LiteralPath $OldCf $Cf; Say "Moved cloudflared from $V0Bin to $Vendor" Green }
+			else { Move-Item -LiteralPath $OldCf $Cf; Add-State 'cloudflared'; Say "Moved cloudflared from $V0Bin to $Vendor" Green }
 		}
 		$OldNt = Join-Path $V0Bin 'nt.cmd'
 		if ((Test-Path -LiteralPath $OldNt) -and ([IO.File]::ReadAllText($OldNt) -eq "@echo off`r`nssh nt %*`r`n")) {
@@ -175,6 +194,11 @@ function Invoke-Setup {
 	}
 
 	# --- cloudflared
+	# Installs from before the state file: the kit's own Host block already
+	# points at this copy, so the kit put it here.
+	if ($Legacy -and (Test-Path -LiteralPath $Cf) -and (Select-String -LiteralPath $NtConf -SimpleMatch "`"$Cf`"" -Quiet)) {
+		Add-State 'cloudflared'
+	}
 	if (Test-Path -LiteralPath $Cf) {
 		Say "cloudflared already installed at $Cf"
 	} else {
@@ -193,6 +217,7 @@ function Invoke-Setup {
 				Fail 'Could not download cloudflared. Check your internet connection and run this again.'
 			}
 			Move-Item -Force "$Cf.download" $Cf
+			Add-State 'cloudflared'
 			Say "Installed cloudflared at $Cf" Green
 		}
 	}
@@ -254,7 +279,16 @@ function Invoke-Setup {
 			if ($words[0] -eq 'include' -and $words.Count -ge 2 -and ($words[1] -eq '~/.ssh/config.d/*' -or $words[1] -eq 'config.d/*')) { $HasInclude = $true; break }
 		}
 	}
+	if ($Legacy -and $HasInclude -and -not (Test-State 'include')) {
+		# Installs from before the state file: a kit backup beside the config, or
+		# a config holding nothing but the Include, means the kit added the line.
+		$Others = @([IO.File]::ReadAllLines($Conf) | Where-Object { $_.Trim() -and $_ -ne 'Include ~/.ssh/config.d/*' })
+		if (Get-ChildItem -LiteralPath $SshDir -Filter 'config.*-backup-*' -File) { Add-State 'include' }
+		elseif ($Others.Count -eq 0) { Add-State 'include'; Add-State "created:$Conf" }
+	}
 	if (-not $HasInclude) {
+		Add-State 'include'
+		if (-not (Test-Path -LiteralPath $Conf)) { Add-State "created:$Conf" }
 		$Old = [byte[]]@()
 		if (Test-Path -LiteralPath $Conf) {
 			$Backup = "$Conf.clv-backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
@@ -292,6 +326,137 @@ function Invoke-Setup {
 	}
 	Show-KeyMessage
 	Say ''
+}
+
+# Remove exactly what the kit put on this computer, and nothing else.
+function Invoke-Uninstall($Options) {
+	$All = $false
+	$Yes = $false
+	foreach ($o in $Options) {
+		if ($o -eq '--all') { $All = $true }
+		elseif ($o -eq '--yes' -or $o -eq '-y') { $Yes = $true }
+		else { Say "clv uninstall: unknown option `"$o`". Use: clv uninstall [--all] [--yes]" Red; exit 2 }
+	}
+
+	Say ''
+	Say 'This removes clv and nt from this computer.' Cyan
+	if ($All) { Say "It also deletes your key ($Key), so you would need to be registered again." Yellow }
+	else { Say "Your key ($Key) is kept, so installing again needs no new registration." }
+	if (-not $Yes) {
+		if ([Console]::IsInputRedirected -or [Console]::IsOutputRedirected) {
+			Say 'Nothing was removed. To go ahead without being asked, add --yes.' Red
+			exit 1
+		}
+		$Reply = Read-Host 'Go ahead? [y/N]'
+		if ($Reply -notin 'y', 'yes') { Say 'Nothing was removed.'; exit 0 }
+	}
+	Say ''
+
+	# --- the "Host nt" entry
+	if (Test-Path -LiteralPath $NtConf) {
+		if (Select-String -LiteralPath $NtConf -SimpleMatch $ConfMarker, $V0ConfMarker -Quiet) {
+			Remove-Item -LiteralPath $NtConf -Force
+			Say "Removed $NtConf" Green
+		} else {
+			Say "Kept $NtConf`: this kit didn't write it" Yellow
+		}
+	}
+
+	# --- the Include line, only if the kit added it and nothing else needs it
+	$IncludeLine = 'Include ~/.ssh/config.d/*'
+	if ((Test-State 'include') -and (Test-Path -LiteralPath $Conf) -and (@([IO.File]::ReadAllLines($Conf)) -contains $IncludeLine)) {
+		if ((Test-Path -LiteralPath $ConfD) -and (Get-ChildItem -LiteralPath $ConfD -Force)) {
+			Say "Kept the Include line in $Conf`: other files in $ConfD still use it"
+		} else {
+			$Text = [IO.File]::ReadAllText($Conf)
+			$At = $Text.IndexOf($IncludeLine)
+			$End = $At + $IncludeLine.Length
+			# the line itself, its line ending, and the blank line the kit wrote below it
+			foreach ($i in 1..2) {
+				if ($End -lt $Text.Length -and $Text[$End] -eq "`r") { $End++ }
+				if ($End -lt $Text.Length -and $Text[$End] -eq "`n") { $End++ } else { break }
+			}
+			$Text = $Text.Remove($At, $End - $At)
+			if ((Test-State "created:$Conf") -and -not $Text.Trim()) {
+				Remove-Item -LiteralPath $Conf -Force
+				Say "Removed $Conf (the kit created it and it was empty again)" Green
+			} else {
+				[IO.File]::WriteAllText($Conf, $Text, $Utf8)
+				Say "Removed the Include line from $Conf" Green
+			}
+		}
+	}
+	if ((Test-Path -LiteralPath $ConfD) -and -not (Get-ChildItem -LiteralPath $ConfD -Force)) { Remove-Item -LiteralPath $ConfD -Force }
+
+	# --- the pinned host key, cloudflared, the cached Cloudflare sign-in
+	if (Test-Path -LiteralPath $KnownHosts) {
+		Remove-Item -LiteralPath $KnownHosts -Force
+		Say "Removed $KnownHosts" Green
+	}
+	$VendorCf = Join-Path $Vendor 'cloudflared.exe'
+	if (Test-Path -LiteralPath $VendorCf) {
+		if (Test-State 'cloudflared') {
+			Remove-Item -LiteralPath $VendorCf -Force
+			Say "Removed $VendorCf" Green
+		} else {
+			Say "Kept $VendorCf`: this kit didn't put it there" Yellow
+		}
+	}
+	$CfDir = Join-Path $HOME '.cloudflared'
+	if (Test-Path -LiteralPath $CfDir) {
+		$Tokens = @(Get-ChildItem -LiteralPath $CfDir -Filter "$NtHostName-*-token*" -File -Force)
+		if ($Tokens.Count -gt 0) {
+			$Tokens | Remove-Item -Force
+			Say "Removed the saved Cloudflare sign-in for $NtHostName" Green
+		}
+	}
+
+	# --- the user PATH entry
+	if ($OnWindows) {
+		$Parts = Get-UserPathParts
+		if ($Parts -contains $Bin) {
+			[Environment]::SetEnvironmentVariable('Path', (@($Parts | Where-Object { $_ -ne $Bin }) -join ';'), 'User')
+			Say "Removed $Bin from your PATH" Green
+		}
+	}
+
+	# --- the key
+	$Name = ''
+	if (Test-Path -LiteralPath "$Key.pub") {
+		$Words = ([IO.File]::ReadAllText("$Key.pub")).Trim() -split '\s+'
+		if ($Words.Count -ge 3) { $Name = $Words[2] -replace '@nt$', '' }
+	}
+	if ($All) {
+		if ((Test-Path -LiteralPath $Key) -or (Test-Path -LiteralPath "$Key.pub")) {
+			Remove-Item -LiteralPath $Key, "$Key.pub" -Force -ErrorAction SilentlyContinue
+			Say "Removed your key ($Key and $Key.pub)" Green
+			if ($Name) { Say "Ask Levi to remove your registration (name: $Name)." Yellow }
+			else { Say 'Ask Levi to remove your registration.' Yellow }
+		}
+	} elseif (Test-Path -LiteralPath $Key) {
+		Say "Kept your key at $Key (to delete it too: clv uninstall --all)"
+	}
+
+	# --- the commands themselves, last. This script is already loaded, so
+	#     deleting its own file here is safe.
+	if (Test-Path -LiteralPath $State) { Remove-Item -LiteralPath $State -Force }
+	foreach ($n in 'nt.cmd', 'clv.cmd', 'clv.ps1') {
+		$f = Join-Path $Bin $n
+		if ((Test-Path -LiteralPath $f) -and (Select-String -LiteralPath $f -SimpleMatch 'clv-client-kit' -Quiet)) {
+			Remove-Item -LiteralPath $f -Force
+			Say "Removed $f" Green
+		}
+	}
+	# Folders only when empty: other things may live in .collevity.
+	foreach ($d in $Vendor, $Bin, $ClvHome) {
+		if ((Test-Path -LiteralPath $d) -and -not (Get-ChildItem -LiteralPath $d -Force)) { Remove-Item -LiteralPath $d -Force }
+	}
+	if (Test-Path -LiteralPath $ClvHome) { Say "Kept $ClvHome`: it has other things in it" }
+	else { Say "Removed $ClvHome" Green }
+
+	Say ''
+	Say 'clv is removed. This window may still remember the old commands; open a new one.' Green
+	exit 0
 }
 
 $Cmd = 'help'
@@ -337,6 +502,7 @@ switch ($Cmd) {
 		if (-not (Test-Path -LiteralPath "$Key.pub")) { Say 'No key yet. Run: clv setup' Red; exit 1 }
 		Show-KeyMessage
 	}
+	'uninstall' { Invoke-Uninstall $Rest }
 	'update' {
 		[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 		try { $Src = Invoke-RestMethod -UseBasicParsing $InstallUrl } catch { Fail 'Could not download the installer. Check your internet connection and try again.' }
@@ -352,8 +518,10 @@ switch ($Cmd) {
 }
 '@
 		[IO.File]::WriteAllText($ClvPs1, $ClvSource.Replace("`r`n", "`n") + "`n", $Utf8)
+		# "& exit /b" on the same line: cmd.exe finishes without re-reading a
+		# clv.cmd that `clv uninstall` has just deleted.
 		[IO.File]::WriteAllText((Join-Path $Bin 'clv.cmd'),
-			"@echo off`r`nrem $Marker`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0clv.ps1`" %*`r`n", $Utf8)
+			"@echo off`r`nrem $Marker`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0clv.ps1`" %* & exit /b`r`n", $Utf8)
 		[IO.File]::WriteAllText((Join-Path $Bin 'nt.cmd'),
 			"@echo off`r`nrem $Marker`: nt is short for clv login`r`n`"%~dp0clv.cmd`" login %*`r`n", $Utf8)
 

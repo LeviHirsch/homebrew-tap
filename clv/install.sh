@@ -68,7 +68,7 @@ write_clv() {
 
 set -eu
 
-CLV_VERSION="0.1.3-kit"
+CLV_VERSION="0.1.4-kit"
 CLV_INSTALL_URL="${CLV_INSTALL_URL:-https://raw.githubusercontent.com/LeviHirsch/homebrew-tap/main/clv/install.sh}"
 
 NT_HOSTNAME="ssh.nascentech.com"
@@ -87,6 +87,9 @@ CONF="$SSH_DIR/config"
 CONF_D="$SSH_DIR/config.d"
 NT_CONF="$CONF_D/nt"
 KNOWN_HOSTS="$CLV_HOME/known_hosts"
+# What setup added to this computer, one fact per line, so uninstall removes
+# exactly that: "cloudflared", "include", "created:<file>".
+STATE="$CLV_HOME/.clv-kit-state"
 CONF_MARKER="# Written by clv setup"
 V0_CONF_MARKER="# Written by the nt installer"
 RC_MARKER="# added by clv installer"
@@ -105,6 +108,8 @@ ok() { printf '%s%s%s\n' "$G" "$*" "$Z"; }
 warn() { printf '%s%s%s\n' "$Y" "$*" "$Z"; }
 die() { printf '\n%sSetup stopped: %s%s\n' "$ER" "$*" "$EZ" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "$2"; }
+state_has() { [ -f "$STATE" ] && grep -qxF "$1" "$STATE"; }
+state_add() { state_has "$1" || printf '%s\n' "$1" >>"$STATE"; }
 
 usage() {
 	cat <<EOF
@@ -114,6 +119,7 @@ ${B}clv $CLV_VERSION: NascenTech client${Z}
   ${B}clv setup${Z}              (re)do this computer's setup; safe to repeat
   ${B}clv key${Z}                show the line to text Levi
   ${B}clv update${Z}             reinstall the latest version
+  ${B}clv uninstall${Z} [--all]  remove clv from this computer (--all: your key too)
   ${B}clv version${Z}            show the version
   ${B}clv help${Z}               show this help
 EOF
@@ -153,6 +159,7 @@ migrate_v0() {
 				rm -f "$old/cloudflared"
 			else
 				mv -f "$old/cloudflared" "$VENDOR/cloudflared"
+				state_add cloudflared
 				ok "Moved cloudflared from $old to $VENDOR"
 			fi
 		fi
@@ -178,6 +185,11 @@ migrate_v0() {
 setup_cloudflared() {
 	local found os arch asset tmp
 	CF="$VENDOR/cloudflared"
+	# Installs from before the state file: the kit's own Host block already
+	# points at this copy, so the kit put it here.
+	if [ "$LEGACY" = 1 ] && [ -e "$CF" ] && grep -qF "\"$CF\"" "$NT_CONF"; then
+		state_add cloudflared
+	fi
 	if [ -x "$CF" ] && "$CF" --version >/dev/null 2>&1 </dev/null; then
 		say "cloudflared already installed at $CF"
 		return
@@ -217,6 +229,7 @@ setup_cloudflared() {
 	rm -rf "$tmp"
 	chmod 755 "$CF"
 	"$CF" --version >/dev/null 2>&1 </dev/null || die "cloudflared downloaded but won't run on this computer."
+	state_add cloudflared
 	ok "Installed cloudflared at $CF"
 }
 
@@ -304,9 +317,21 @@ ensure_include() {
 		tolower($1)=="include" && ($2=="~/.ssh/config.d/*" || $2=="config.d/*") { found=1; exit 0 }
 		END { exit !found }' "$CONF"; then
 		chmod 600 "$CONF"
+		# Installs from before the state file: a kit backup beside the config, or
+		# a config holding nothing but the Include, means the kit added the line.
+		if [ "$LEGACY" = 1 ] && ! state_has include; then
+			if ls "$CONF".clv-backup-* "$CONF".nt-backup-* >/dev/null 2>&1; then
+				state_add include
+			elif ! grep -v '^[[:space:]]*$' "$CONF" | grep -qvxF 'Include ~/.ssh/config.d/*'; then
+				state_add include
+				state_add "created:$CONF"
+			fi
+		fi
 		return
 	fi
 	local backup
+	state_add include
+	[ -f "$CONF" ] || state_add "created:$CONF"
 	if [ -f "$CONF" ]; then
 		backup="$CONF.clv-backup-$(date +%Y%m%d-%H%M%S)"
 		cp -p "$CONF" "$backup" || die "Could not back up $CONF."
@@ -345,6 +370,7 @@ setup_path() {
 		if [ -f "$f" ] && grep -qF "$RC_MARKER" "$f"; then
 			continue
 		fi
+		[ -e "$f" ] || state_add "created:$f"
 		printf '\n%s\n' "$line" >>"$f" || die "Could not update $f."
 		ok "Added ~/.collevity/bin to PATH in $f"
 	done
@@ -421,6 +447,14 @@ cmd_setup() {
 	mkdir -p "$SSH_DIR" || die "Could not create $SSH_DIR."
 	chmod 700 "$SSH_DIR"
 
+	# No state file but the kit's Host block is there: an install from before
+	# the state file existed. Setup then works out once what the kit had added.
+	LEGACY=0
+	if [ ! -f "$STATE" ]; then
+		if [ -f "$NT_CONF" ]; then LEGACY=1; fi
+		state_add "kit-state-1"
+	fi
+
 	migrate_v0
 	setup_cloudflared
 	setup_key
@@ -437,6 +471,143 @@ cmd_setup() {
 	say ""
 }
 
+# Remove exactly what the kit put on this computer, and nothing else.
+cmd_uninstall() {
+	local all=0 yes=0 a f n reply name=""
+	for a in "$@"; do
+		case "$a" in
+			--all) all=1 ;;
+			--yes | -y) yes=1 ;;
+			*) printf '%sclv uninstall: unknown option "%s". Use: clv uninstall [--all] [--yes]%s\n' "$ER" "$a" "$EZ" >&2; exit 2 ;;
+		esac
+	done
+
+	say ""
+	say "${B}This removes clv and nt from this computer.${Z}"
+	if [ "$all" = 1 ]; then
+		say "${Y}It also deletes your key ($KEY), so you would need to be registered again.${Z}"
+	else
+		say "Your key ($KEY) is kept, so installing again needs no new registration."
+	fi
+	if [ "$yes" != 1 ]; then
+		if [ ! -t 0 ] || [ ! -t 1 ]; then
+			printf '%sNothing was removed. To go ahead without being asked, add --yes.%s\n' "$ER" "$EZ" >&2
+			exit 1
+		fi
+		printf 'Go ahead? [y/N] '
+		read -r reply || reply=""
+		case "$reply" in y | Y | yes | Yes | YES) ;; *) say "Nothing was removed."; exit 0 ;; esac
+	fi
+	say ""
+
+	# --- the "Host nt" entry
+	if [ -f "$NT_CONF" ]; then
+		if grep -qF -e "$CONF_MARKER" -e "$V0_CONF_MARKER" "$NT_CONF"; then
+			rm -f "$NT_CONF"
+			ok "Removed $NT_CONF"
+		else
+			warn "Kept $NT_CONF: this kit didn't write it"
+		fi
+	fi
+
+	# --- the Include line, only if the kit added it and nothing else needs it
+	if state_has include && [ -f "$CONF" ] && grep -qxF 'Include ~/.ssh/config.d/*' "$CONF"; then
+		if [ -d "$CONF_D" ] && [ -n "$(ls -A "$CONF_D" 2>/dev/null)" ]; then
+			say "Kept the Include line in $CONF: other files in $CONF_D still use it"
+		else
+			awk '!done && $0=="Include ~/.ssh/config.d/*" { done=1; skip=1; next }
+				skip { skip=0; if ($0=="") next }
+				{ print }' "$CONF" >"$CONF.clv-tmp"
+			# cat, not mv: keeps the file's permissions and any symlink in place
+			cat "$CONF.clv-tmp" >"$CONF"
+			rm -f "$CONF.clv-tmp"
+			if state_has "created:$CONF" && ! grep -q '[^[:space:]]' "$CONF"; then
+				rm -f "$CONF"
+				ok "Removed $CONF (the kit created it and it was empty again)"
+			else
+				ok "Removed the Include line from $CONF"
+			fi
+		fi
+	fi
+	rmdir "$CONF_D" 2>/dev/null || true
+
+	# --- the pinned host key, cloudflared, the cached Cloudflare sign-in
+	if [ -f "$KNOWN_HOSTS" ]; then
+		rm -f "$KNOWN_HOSTS"
+		ok "Removed $KNOWN_HOSTS"
+	fi
+	if [ -e "$VENDOR/cloudflared" ]; then
+		if state_has cloudflared; then
+			rm -f "$VENDOR/cloudflared"
+			ok "Removed $VENDOR/cloudflared"
+		else
+			warn "Kept $VENDOR/cloudflared: this kit didn't put it there"
+		fi
+	fi
+	n=0
+	for f in "$HOME/.cloudflared/$NT_HOSTNAME"-*-token*; do
+		[ -e "$f" ] || continue
+		rm -f "$f"
+		n=$((n + 1))
+	done
+	[ "$n" -eq 0 ] || ok "Removed the saved Cloudflare sign-in for $NT_HOSTNAME"
+
+	# --- the PATH line in shell startup files
+	for f in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile"; do
+		[ -f "$f" ] && grep -qF -e "$RC_MARKER" -e "$V0_RC_MARKER" "$f" || continue
+		# drop the marked line and the blank line the kit wrote above it
+		awk -v m="$RC_MARKER" -v m0="$V0_RC_MARKER" '
+			function flush() { if (have) print buf; have=0 }
+			index($0, m) || index($0, m0) { if (have && buf != "") print buf; have=0; next }
+			{ flush(); buf=$0; have=1 }
+			END { flush() }' "$f" >"$f.clv-tmp"
+		cat "$f.clv-tmp" >"$f"
+		rm -f "$f.clv-tmp"
+		if state_has "created:$f" && ! grep -q '[^[:space:]]' "$f"; then
+			rm -f "$f"
+			ok "Removed $f (the kit created it and it was empty again)"
+		else
+			ok "Removed the clv PATH line from $f"
+		fi
+	done
+
+	# --- the key
+	if [ -f "$KEY.pub" ]; then
+		name="$(awk '{print $3}' "$KEY.pub" | sed 's/@nt$//')"
+	fi
+	if [ "$all" = 1 ]; then
+		if [ -e "$KEY" ] || [ -e "$KEY.pub" ]; then
+			rm -f "$KEY" "$KEY.pub"
+			ok "Removed your key ($KEY and $KEY.pub)"
+			say "${Y}Ask Levi to remove your registration${name:+ (name: $name)}.${Z}"
+		fi
+	elif [ -e "$KEY" ]; then
+		say "Kept your key at $KEY (to delete it too: clv uninstall --all)"
+	fi
+
+	# --- the commands themselves, last. This script is already loaded, so
+	#     deleting its own file here is safe.
+	rm -f "$STATE"
+	for f in "$BIN/nt" "$BIN/clv"; do
+		if [ -f "$f" ] && grep -qF "# clv-client-kit" "$f"; then
+			rm -f "$f"
+			ok "Removed $f"
+		fi
+	done
+	# Folders only when empty: other things may live in ~/.collevity.
+	rmdir "$VENDOR" 2>/dev/null || true
+	rmdir "$BIN" 2>/dev/null || true
+	if rmdir "$CLV_HOME" 2>/dev/null; then
+		ok "Removed $CLV_HOME"
+	else
+		say "Kept $CLV_HOME: it has other things in it"
+	fi
+
+	say ""
+	say "${B}${G}clv is removed.${Z} This window may still remember the old commands; open a new terminal."
+	exit 0
+}
+
 cmd_key() {
 	[ -f "$KEY.pub" ] || { printf '%sNo key yet. Run: clv setup%s\n' "$ER" "$EZ" >&2; exit 1; }
 	print_key_message
@@ -446,6 +617,7 @@ case "${1:-help}" in
 	login) shift; cmd_login "$@" ;;
 	setup) cmd_setup ;;
 	key) cmd_key ;;
+	uninstall) shift; cmd_uninstall "$@" ;;
 	update)
 		src="$(curl -fsSL "$CLV_INSTALL_URL")" || die "Could not download the installer. Check your internet connection and try again."
 		printf '%s\n' "$src" | bash

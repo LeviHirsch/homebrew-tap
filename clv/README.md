@@ -36,6 +36,7 @@ You'll see `→ Connecting to the NascenTech server` when you go in and `← Bac
 | `clv setup` | redo this computer's setup; safe to repeat |
 | `clv key` | show the line to text Levi again |
 | `clv update` | reinstall the latest version |
+| `clv uninstall` | remove clv from this computer (`--all`: your key too) |
 | `clv version`, `clv help` | |
 
 ## What the installer changes
@@ -58,17 +59,22 @@ If `nt` says "command not found" right after installing, open a new terminal win
 
 The kit pins the server's SSH host key in its own `known_hosts` file, so nobody sees a "are you sure you want to continue connecting?" prompt, and an old entry in `~/.ssh/known_hosts` can't get in the way. If the server's key ever changes, Levi updates the one `NT_HOST_KEY` line in `install.sh` and `$NtHostKey` in `install.ps1`, pushes, and everyone runs `clv update`.
 
-## Undo
-
-Mac / Linux:
+## Uninstall
 
 ```sh
-rm -f ~/.collevity/bin/clv ~/.collevity/bin/nt ~/.collevity/vendor/cloudflared ~/.collevity/known_hosts ~/.ssh/config.d/nt ~/.ssh/id_ed25519_nt ~/.ssh/id_ed25519_nt.pub
+clv uninstall          # removes clv and nt; keeps your key
+clv uninstall --all    # also deletes your key (then ask Levi to remove your registration)
 ```
 
-Then delete the `Include ~/.ssh/config.d/*` line from `~/.ssh/config` (if nothing else uses it) and the `# added by clv installer` line from your shell files.
+It asks before doing anything (`--yes` skips the question) and prints each thing it removed. It removes only what the kit put there:
 
-Windows: delete `%USERPROFILE%\.collevity\bin\{clv.cmd,clv.ps1,nt.cmd}`, `%USERPROFILE%\.collevity\vendor\cloudflared.exe`, `%USERPROFILE%\.collevity\known_hosts`, `.ssh\config.d\nt`, `.ssh\id_ed25519_nt*`, the `Include` line in `.ssh\config`, and remove `%USERPROFILE%\.collevity\bin` from your user PATH (Settings → "Edit environment variables for your account").
+- `clv` and `nt`, the pinned host key, and the kit's `Host nt` entry
+- cloudflared, only if the kit downloaded it
+- the kit's PATH line in your shell files (on Windows, its entry in your user PATH)
+- the `Include ~/.ssh/config.d/*` line, only if the kit added it and nothing else in `config.d` needs it
+- the saved Cloudflare sign-in for ssh.nascentech.com (in `~/.cloudflared`)
+
+Your key (`~/.ssh/id_ed25519_nt`) stays unless you pass `--all`, so installing again needs no new registration. `~/.collevity` itself stays if anything else is in it. Backups of your SSH config (`config.clv-backup-<date>`) are left alone.
 
 ## For Levi: register / remove
 
@@ -79,3 +85,11 @@ nt-register --dry-run ...          # show what would change, connect to nothing
 ```
 
 `<name>` is lowercase (`ana`, `ben-k`). It's what `clv whoami` will show on the server. Each change backs up the mini's `authorized_keys` first. Test against a local file with `NT_REGISTER_AUTHKEYS_FILE=/tmp/ak nt-register ...`.
+
+## Tests
+
+```sh
+clv/tests/run.sh
+```
+
+Runs everything in throwaway home folders with fake `ssh` and `curl`; it never connects anywhere or touches your real home. See [`AGENTS.md`](AGENTS.md) before changing anything here.
