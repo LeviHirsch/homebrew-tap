@@ -26,7 +26,7 @@ When Levi says you're registered, type:
 nt
 ```
 
-You'll see `→ Connecting to the NascenTech server` when you go in and `← Back on your own computer` when you leave; the window title says "NascenTech server" while you're there. (`clv login` does the same.) The first time, and about once a week after, a browser opens: sign in with your @nascentech.com Google account.
+You'll see `→ Connecting to the NascenTech server`, then `✓ Connected` once you're in (after any browser sign-in), and `← Back on your own computer` when you leave; the window title says "NascenTech server" while you're there. (`clv login` does the same.) The first time, and about once a week after, a browser opens: sign in with your @nascentech.com Google account.
 
 ## The `clv` command
 
@@ -35,7 +35,7 @@ You'll see `→ Connecting to the NascenTech server` when you go in and `← Bac
 | `clv login` | log in to the server (same as `nt`) |
 | `clv setup` | redo this computer's setup; safe to repeat |
 | `clv key` | show the line to text Levi again |
-| `clv update` | reinstall the latest version |
+| `clv update` | reinstall the latest version (your key stays the same; nothing to re-send) |
 | `clv uninstall` | remove clv from this computer (`--all`: your key too) |
 | `clv version`, `clv help` | |
 

@@ -45,7 +45,7 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$ClvVersion = '0.1.4-kit'
+$ClvVersion = '0.1.5-kit'
 $InstallUrl = 'https://raw.githubusercontent.com/LeviHirsch/homebrew-tap/main/clv/install.ps1'
 if ($env:CLV_INSTALL_URL) { $InstallUrl = $env:CLV_INSTALL_URL }
 
@@ -142,7 +142,7 @@ function Invoke-Setup {
 	}
 	$ToCheck = @()
 	if (Test-Path -LiteralPath $Conf) { $ToCheck += $Conf }
-	if (Test-Path -LiteralPath $ConfD) { $ToCheck += Get-ChildItem -LiteralPath $ConfD -File | Where-Object { $_.FullName -ne $NtConf } | ForEach-Object { $_.FullName } }
+	if (Test-Path -LiteralPath $ConfD) { $ToCheck += Get-ChildItem -LiteralPath $ConfD -File | Where-Object { $_.Name -ne 'nt' } | ForEach-Object { $_.FullName } }
 	foreach ($f in $ToCheck) {
 		$n = 0
 		foreach ($line in [IO.File]::ReadAllLines($f)) {
@@ -223,6 +223,7 @@ function Invoke-Setup {
 	}
 
 	# --- SSH key
+	$KeyNew = $false
 	if (Test-Path -LiteralPath $Key) {
 		Say "Using your existing key at $Key"
 		if (-not (Test-Path -LiteralPath "$Key.pub")) {
@@ -239,6 +240,7 @@ function Invoke-Setup {
 		$KeygenArgs = "-q -t ed25519 -N `"`" -C `"$Name@nt`" -f `"$Key`""
 		$p = Start-Process -FilePath $SshKeygen.Source -ArgumentList $KeygenArgs -NoNewWindow -Wait -PassThru
 		if ($p.ExitCode -ne 0 -or -not (Test-Path -LiteralPath "$Key.pub")) { Fail 'Could not create your SSH key.' }
+		$KeyNew = $true
 		Say "Created your key at $Key" Green
 	}
 
@@ -318,13 +320,25 @@ function Invoke-Setup {
 	}
 
 	Say ''
-	Say 'Done. One more step.' Green
-	Say ''
+	# The key only needs sending when it is new. After an update or a repeat
+	# setup it is the same key Levi already has.
+	if ($KeyNew) {
+		Say 'Done. One more step.' Green
+		Say ''
+	} elseif ($env:CLV_UPDATING) {
+		Say "Updated to $ClvVersion. Your key has not changed, so there is nothing to send." Green
+		Say 'To log in, type: nt   (to see your key again: clv key)'
+		Say ''
+	} else {
+		Say "Done. clv $ClvVersion is set up. Your key has not changed, so there is nothing to send." Green
+		Say 'To log in, type: nt   (to see your key again: clv key)'
+		Say ''
+	}
 	if ($OnWindows -and ($env:Path -split ';') -notcontains $Bin -and -not $env:CLV_FROM_INSTALLER) {
 		Say "If typing nt says it isn't recognized, open a new PowerShell window." Yellow
 		Say ''
 	}
-	Show-KeyMessage
+	if ($KeyNew) { Show-KeyMessage }
 	Say ''
 }
 
@@ -477,7 +491,11 @@ switch ($Cmd) {
 		$OldTitle = $null
 		try { $OldTitle = $Host.UI.RawUI.WindowTitle; $Host.UI.RawUI.WindowTitle = 'NascenTech server' } catch { $OldTitle = $null }
 		$Rc = 255
-		try { & ssh nt; $Rc = $LASTEXITCODE }
+		# ssh runs this on this computer the moment the login succeeds (after any
+		# browser sign-in). Fixed text only, and no % in it (ssh substitutes those).
+		# Passed here, not in the Host block, so `nt <command>` never prints it.
+		$Connected = "cmd /c echo [OK] Connected. You are now on the NascenTech server ($NtServerLabel). Type exit to come back."
+		try { & ssh -o PermitLocalCommand=yes -o "LocalCommand=$Connected" nt; $Rc = $LASTEXITCODE }
 		finally { if ($null -ne $OldTitle) { try { $Host.UI.RawUI.WindowTitle = $OldTitle } catch { } } }
 
 		# 255 is ssh's own "could not connect"; anything else came from the session.
@@ -506,7 +524,8 @@ switch ($Cmd) {
 	'update' {
 		[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 		try { $Src = Invoke-RestMethod -UseBasicParsing $InstallUrl } catch { Fail 'Could not download the installer. Check your internet connection and try again.' }
-		Invoke-Expression $Src
+		$env:CLV_UPDATING = '1'
+		try { Invoke-Expression $Src } finally { Remove-Item Env:CLV_UPDATING -ErrorAction SilentlyContinue }
 	}
 	{ $_ -in 'version', '--version', '-v' } { Say "clv $ClvVersion" }
 	{ $_ -in 'help', '--help', '-h' } { Show-Usage }

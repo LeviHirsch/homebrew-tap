@@ -68,7 +68,7 @@ write_clv() {
 
 set -eu
 
-CLV_VERSION="0.1.4-kit"
+CLV_VERSION="0.1.5-kit"
 CLV_INSTALL_URL="${CLV_INSTALL_URL:-https://raw.githubusercontent.com/LeviHirsch/homebrew-tap/main/clv/install.sh}"
 
 NT_HOSTNAME="ssh.nascentech.com"
@@ -256,6 +256,7 @@ setup_key() {
 
 	ssh-keygen -q -t ed25519 -N "" -C "$name@nt" -f "$KEY" </dev/null || die "Could not create your SSH key."
 	chmod 600 "$KEY"
+	KEY_NEW=1
 	ok "Created your key at $KEY"
 }
 
@@ -384,24 +385,29 @@ cmd_login() {
 		exec ssh nt "$@"
 	fi
 
-	local here rc=0 tmp log="" reason next
+	local here rc=0 tmp log="" reason next connected
 	here="$(hostname -s 2>/dev/null || hostname 2>/dev/null || echo "this computer")"
 	tmp="$(mktemp -d 2>/dev/null || true)"
 	# Put the window title back and tidy up, also on Ctrl-C.
 	trap 'printf "\033]0;\007"; [ -n "$tmp" ] && rm -rf "$tmp"' EXIT
 
 	say "${B}${C}→ Connecting to the NascenTech server ($NT_SERVER_LABEL)...${Z}"
+	# ssh runs this on this computer the moment the login succeeds (after any
+	# browser sign-in). It goes through the user's shell and through ssh's own
+	# % substitution, so: fixed text only, no quotes and no % in it. Passed here,
+	# not in the Host block, so scp and `nt <command>` never print it.
+	connected="echo '${B}${G}✓ Connected. You are now on the NascenTech server ($NT_SERVER_LABEL). Type exit to come back.${Z}'"
 	printf '\033]0;NascenTech server\007'
 
 	# Keep a copy of ssh's own messages (still shown as usual) so a failed
 	# connection can be explained in plain words.
 	if [ -n "$tmp" ] && mkfifo "$tmp/err" 2>/dev/null; then
 		tee "$tmp/log" <"$tmp/err" >&2 &
-		ssh nt 2>"$tmp/err" || rc=$?
+		ssh -o PermitLocalCommand=yes -o "LocalCommand=$connected" nt 2>"$tmp/err" || rc=$?
 		wait || true
 		log="$(cat "$tmp/log" 2>/dev/null || true)"
 	else
-		ssh nt || rc=$?
+		ssh -o PermitLocalCommand=yes -o "LocalCommand=$connected" nt || rc=$?
 	fi
 	printf '\033]0;\007'
 
@@ -455,6 +461,7 @@ cmd_setup() {
 		state_add "kit-state-1"
 	fi
 
+	KEY_NEW=0
 	migrate_v0
 	setup_cloudflared
 	setup_key
@@ -464,10 +471,23 @@ cmd_setup() {
 	setup_path
 
 	say ""
-	say "${B}${G}Done.${Z}${B} One more step.${Z}"
-	say ""
-	path_hint
-	print_key_message
+	# The key only needs sending when it is new. After an update or a repeat
+	# setup it is the same key Levi already has.
+	if [ "$KEY_NEW" = 1 ]; then
+		say "${B}${G}Done.${Z}${B} One more step.${Z}"
+		say ""
+		path_hint
+		print_key_message
+	else
+		if [ -n "${CLV_UPDATING:-}" ]; then
+			say "${B}${G}Updated to $CLV_VERSION.${Z} Your key has not changed, so there is nothing to send."
+		else
+			say "${B}${G}Done.${Z} clv $CLV_VERSION is set up. Your key has not changed, so there is nothing to send."
+		fi
+		say "To log in, type: ${B}nt${Z}   (to see your key again: clv key)"
+		say ""
+		path_hint
+	fi
 	say ""
 }
 
@@ -620,7 +640,7 @@ case "${1:-help}" in
 	uninstall) shift; cmd_uninstall "$@" ;;
 	update)
 		src="$(curl -fsSL "$CLV_INSTALL_URL")" || die "Could not download the installer. Check your internet connection and try again."
-		printf '%s\n' "$src" | bash
+		printf '%s\n' "$src" | CLV_UPDATING=1 bash
 		;;
 	version | --version | -v) say "clv $CLV_VERSION" ;;
 	help | --help | -h) usage ;;

@@ -80,10 +80,20 @@ esac
 EOF
 
 # Fake ssh: never connects. Prints its arguments; FAKE_ERR goes to stderr; exits FAKE_RC.
+# Like real ssh, it runs a permitted LocalCommand once the "login" has succeeded.
 cat >"$SHIM/ssh" <<'EOF'
 #!/bin/sh
-echo "FAKE-SSH args: $*"
+permit=0; local_cmd=""; shown=""
+for a in "$@"; do
+	case "$a" in
+		PermitLocalCommand=yes) permit=1 ;;
+		LocalCommand=*) local_cmd="${a#LocalCommand=}"; a="LocalCommand=<set>" ;;
+	esac
+	shown="$shown $a"
+done
+echo "FAKE-SSH args:$shown"
 [ -n "${FAKE_ERR:-}" ] && echo "$FAKE_ERR" >&2
+if [ "${FAKE_RC:-0}" != 255 ] && [ "$permit" = 1 ] && [ -n "$local_cmd" ]; then sh -c "$local_cmd"; fi
 exit "${FAKE_RC:-0}"
 EOF
 chmod 755 "$SHIM/curl" "$SHIM/ssh"
@@ -148,6 +158,7 @@ check "permissions: 700 dirs, 600 private files" '[ "$(stat -f %Lp "$H/.ssh" 2>/
 check "Include is the first line of ~/.ssh/config" '[ "$(head -n 1 "$H/.ssh/config")" = "Include ~/.ssh/config.d/*" ]'
 check "PATH line added to .zshrc once" '[ "$(grep -c "added by clv installer" "$H/.zshrc")" = 1 ]'
 check "output has the key line, plain, and no color codes when piped" 'grep -qx "  $(cat "$H/.ssh/id_ed25519_nt.pub")" "$OUT" && [ "$(esc_count "$OUT")" = 0 ]'
+check "fresh install ends with the key block (the key is new)" 'grep -q "One more step" "$OUT" && grep -q "Text this whole line to Levi" "$OUT" && ! grep -q "nothing to send" "$OUT"'
 check "output says how to fix PATH in this window" 'grep -q "paste this line:  source ~/.zshrc" "$OUT"'
 check "state file records what the kit added" 'grep -qx cloudflared "$H/.collevity/.clv-kit-state" && grep -qx include "$H/.collevity/.clv-kit-state" && grep -qx "created:$H/.zshrc" "$H/.collevity/.clv-kit-state"'
 
@@ -156,6 +167,7 @@ before="$(snapshot)"
 : >"$CURL_LOG"
 install_kit NT_NAME=someone-else
 check "second run exits 0" '[ $RC -eq 0 ]'
+check "second run does not ask to send the unchanged key again" 'grep -q "Your key has not changed, so there is nothing to send" "$OUT" && ! grep -q "Text this whole line to Levi" "$OUT" && ! grep -q "ssh-ed25519 AAAA" "$OUT"'
 check "every file byte-identical after the second run" '[ "$before" = "$(snapshot)" ]'
 check "nothing downloaded the second time" '[ ! -s "$CURL_LOG" ]'
 check "no config backup made" '! ls "$H/.ssh/"config.clv-backup-*'
@@ -182,6 +194,7 @@ check "unknown command: help and exit 2" '[ $RC -eq 2 ] && grep -q "unknown comm
 run in_home clv setup
 check "clv setup exits 0 and changes nothing" '[ $RC -eq 0 ] && [ "$before" = "$(snapshot)" ]'
 run in_home CLV_INSTALL_URL=https://example.invalid/clv/install.sh clv update
+check "clv update says Updated to $VERSION and does not ask to re-send the key" 'grep -q "Updated to $VERSION. Your key has not changed, so there is nothing to send." "$OUT" && ! grep -q "Text this whole line to Levi" "$OUT"'
 check "clv update reinstalls from the published installer, nothing changes" '[ $RC -eq 0 ] && grep -q "Setting up clv" "$OUT" && [ "$before" = "$(snapshot)" ]'
 run in_home CLV_INSTALL_URL=https://example.invalid/missing clv update
 check "clv update with a failed download: plain sentence, exit 1" '[ $RC -eq 1 ] && grep -q "Could not download the installer" "$OUT"'
@@ -193,17 +206,20 @@ mv "$ROOT/pub.aside" "$H/.ssh/id_ed25519_nt.pub"
 section "Login: banners and exit status"
 LOGIN_HOME="$H"
 run in_home nt
+check "not a terminal: no Connected line either" '! grep -q "Connected" "$OUT"'
 check "not a terminal: plain ssh, no banner" '[ $RC -eq 0 ] && [ "$(cat "$OUT")" = "FAKE-SSH args: nt" ]'
 run in_home FAKE_RC=7 nt ls -la
 check "with arguments: passed to ssh, exit status passed back" '[ $RC -eq 7 ] && [ "$(cat "$OUT")" = "FAKE-SSH args: nt ls -la" ]'
 if [ "$HAVE_PTY" = 1 ]; then
 	on_tty nt
 	check "terminal: Connecting banner, then Back banner, exit 0" 'grep -q "Connecting to the NascenTech server (maqmini)" "$OUT" && grep -q "Back on your own computer" "$OUT" && grep -q "^EXIT=0" "$OUT"'
+	check "terminal: green Connected line, between Connecting and Back" '[ "$(grep -n "Connecting to" "$OUT" | cut -d: -f1)" -lt "$(grep -n "Connected. You are now on the NascenTech server (maqmini). Type exit to come back." "$OUT" | cut -d: -f1)" ] && [ "$(grep -n "Connected. You are now" "$OUT" | cut -d: -f1)" -lt "$(grep -n "Back on your own computer" "$OUT" | cut -d: -f1)" ] && LC_ALL=C grep -q "$(printf "\033\\[32m").*Connected" "$OUT"'
 	check "terminal: window title set and reset" 'LC_ALL=C grep -q "$(printf "\033]0;NascenTech server\007")" "$OUT" && LC_ALL=C grep -q "$(printf "\033]0;\007")" "$OUT"'
 	check "terminal: banners are colored" '[ "$(esc_count "$OUT")" -gt 0 ]'
 	on_tty FAKE_RC=3 clv login
 	check "terminal: session exit status passed through" 'grep -q "Back on your own computer" "$OUT" && grep -q "^EXIT=3" "$OUT"'
 	on_tty FAKE_RC=255 FAKE_ERR="nascentech@ssh.nascentech.com: Permission denied (publickey)." nt
+	check "failed login: no Connected line" '! grep -q "Connected. You are now" "$OUT"'
 	check "failed login (not registered): reason, clv key hint, exit 255" 'grep -q "registered your key yet" "$OUT" && grep -q "clv key" "$OUT" && grep -q "Still on your own computer" "$OUT" && grep -q "^EXIT=255" "$OUT"'
 	on_tty FAKE_RC=255 FAKE_ERR="dial tcp: lookup ssh.nascentech.com: no such host" nt
 	check "failed login (offline): says offline" 'grep -q "you look offline" "$OUT"'
@@ -212,7 +228,7 @@ if [ "$HAVE_PTY" = 1 ]; then
 	on_tty FAKE_RC=255 FAKE_ERR="kex_exchange_identification: Connection closed by remote host" nt
 	check "failed login (other): says the sign-in didn't finish" 'grep -q "sign-in didn.t finish" "$OUT"'
 	on_tty NO_COLOR=1 nt
-	check "NO_COLOR on a terminal: no color codes" 'grep -q "Connecting to" "$OUT" && [ "$(esc_count "$OUT")" = 0 ]'
+	check "NO_COLOR on a terminal: no color codes" 'grep -q "Connecting to" "$OUT" && grep -q "Connected. You are now" "$OUT" && [ "$(esc_count "$OUT")" = 0 ]'
 else
 	skip "terminal-only login cases (need python3 3.9+ for a pseudo-terminal)"
 fi
@@ -413,14 +429,17 @@ if command -v pwsh >/dev/null 2>&1; then
 	check "install.ps1 parses with no errors" '[ "$(parse_errors "$INSTALL_PS1")" = 0 ]'
 	new_home
 	ps_install NT_NAME=Ana
-	check "sandbox install runs; the PowerShell session survives" 'grep -q "Done. One more step" "$OUT" && grep -q "AFTER-IEX" "$OUT"'
+	check "sandbox install runs; the PowerShell session survives" 'grep -q "Done. One more step" "$OUT" && grep -q "Text this whole line to Levi" "$OUT" && grep -q "AFTER-IEX" "$OUT"'
 	check "the embedded clv.ps1 parses with no errors" '[ "$(parse_errors "$H/.collevity/bin/clv.ps1")" = 0 ]'
 	check "clv.cmd, nt.cmd, key, known_hosts written" '[ -f "$H/.collevity/bin/clv.cmd" ] && [ -f "$H/.collevity/bin/nt.cmd" ] && grep -q " ana@nt" "$H/.ssh/id_ed25519_nt.pub" && ssh-keygen -lf "$H/.collevity/known_hosts" | grep -q "$PINNED_FP"'
 	check "ssh -G: host, pinned key settings" 'ssh_g | grep -qx "hostname ssh.nascentech.com" && ssh_g | grep -qx "hostkeyalgorithms ssh-ed25519" && ssh_g | grep -Eqx "stricthostkeychecking (true|yes)"'
 	check "no color codes when piped" '[ "$(esc_count "$OUT")" = 0 ]'
 	before="$(snapshot)"
 	ps_install
-	check "rerun identical" '[ "$before" = "$(snapshot)" ]'
+	check "rerun identical" '[ "$before" = "$(snapshot)" ] && ! grep -q "Setup stopped" "$OUT"'
+	check "rerun does not ask to send the unchanged key again" 'grep -q "Your key has not changed, so there is nothing to send" "$OUT" && ! grep -q "Text this whole line to Levi" "$OUT"'
+	ps_clv key
+	check "clv key still shows the key block" '[ $RC -eq 0 ] && grep -q "Text this whole line to Levi" "$OUT"'
 	ps_clv version
 	check "clv version prints $VERSION" '[ "$(tr -d "\r" <"$OUT")" = "clv $VERSION" ]'
 	ps_clv bogus
